@@ -27,7 +27,7 @@
    - **OOD Generalization**: Drop in multi-step accuracy on unseen logic patterns  
 
 ## 3. Experimental Environment Setup
-- **Hardware**: 2 × Tesla V100 GPUs, CUDA 11.4  
+- **Hardware**: RTX4070 GPUs, CUDA 11.4  
 - **Software**: PyTorch 1.12; HuggingFace Transformers; Accelerate; custom `gym-logic` puzzle environment  
 - **Model**: GPT-Neo 1.3B (baseline logic puzzle example runs successfully on a single GPU)  
 - **Baseline Verification**: PPO converges on simple puzzles in ~5k steps with ~38% multi-step accuracy  
