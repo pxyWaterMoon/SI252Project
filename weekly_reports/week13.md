@@ -11,7 +11,7 @@ This week, we reviewed the selected literature, *Logic-RL: Unleashing LLM Reason
 
     + The overall pipeline of RLOO [10] is similar to that of GRPO, with the key difference being that RLOO employs the leave-one-out (LOO) strategy for baseline calculation.
 
-In subsequent experiments, we will explore and compare these different post-training approaches, analyzing how the choice of baseline affects fine-tuning for LLMs as well as traditional reinforcement learning environments.
+    In subsequent experiments, we will explore and compare these different post-training approaches, analyzing how the choice of baseline affects fine-tuning for LLMs as well as traditional reinforcement learning environments.
 
 ## Reference
 
