@@ -5,7 +5,7 @@ export WANDB_API_KEY=3794b1a3f5c1feef3ff49616c1ba75766abab13d
 export CUDA_VISIBLE_DEVICES=1
 export WANDB_MODE=offline
 python3 -m verl.trainer.main_ppo \
-    algorithm.adv_estimator=reinforce_plus_plus \
+    algorithm.adv_estimator=remax \
     data.train_files=data/kk \
     data.val_files=data/kk \
     data.train_batch_size=2 \
@@ -35,10 +35,10 @@ python3 -m verl.trainer.main_ppo \
     trainer.critic_warmup=0 \
     trainer.logger=['wandb'] \
     trainer.project_name='GRPO_logic_KK' \
-    trainer.experiment_name='Qwen-0.5B-reinforce_plus_plus' \
+    trainer.experiment_name='Qwen-0.5B-remax' \
     trainer.n_gpus_per_node=1 \
     trainer.nnodes=1 \
-    trainer.default_local_dir=../output/reinforce_plus_plus-0531 \
+    trainer.default_local_dir=../output/remax-0531 \
     trainer.default_hdfs_dir=null \
     trainer.save_freq=0 \
     trainer.test_freq=100 \

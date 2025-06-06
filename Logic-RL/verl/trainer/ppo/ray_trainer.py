@@ -131,6 +131,19 @@ def compute_advantage(data: DataProto, adv_estimator, gamma=1.0, lam=1.0, num_re
                                                                       lam=lam)
         data.batch['advantages'] = advantages
         data.batch['returns'] = returns
+    if adv_estimator == 'remax':
+        # remax is a special case that we need to compute advantages based on greedy responses
+        token_level_rewards = data.batch['token_level_rewards']
+        greedy_token_level_rewards = data.batch['greedy_token_level_rewards']
+        responses = data.batch['responses']
+        response_length = responses.size(-1)
+        attention_mask = data.batch['attention_mask']
+        response_mask = attention_mask[:, -response_length:]
+        advantages, returns = core_algos.compute_remax_outcome_advantage(token_level_rewards=token_level_rewards,
+                                                                        greedy_token_level_rewards=greedy_token_level_rewards,
+                                                                        eos_mask=response_mask)
+        data.batch['advantages'] = advantages
+        data.batch['returns'] = returns
     elif adv_estimator == 'grpo':
         token_level_rewards = data.batch['token_level_rewards']
         index = data.non_tensor_batch['uid']
@@ -139,6 +152,18 @@ def compute_advantage(data: DataProto, adv_estimator, gamma=1.0, lam=1.0, num_re
         attention_mask = data.batch['attention_mask']
         response_mask = attention_mask[:, -response_length:]
         advantages, returns = core_algos.compute_grpo_outcome_advantage(token_level_rewards=token_level_rewards,
+                                                                        eos_mask=response_mask,
+                                                                        index=index)
+        data.batch['advantages'] = advantages
+        data.batch['returns'] = returns
+    elif adv_estimator == 'rloo':
+        token_level_rewards = data.batch['token_level_rewards']
+        index = data.non_tensor_batch['uid']
+        responses = data.batch['responses']
+        response_length = responses.size(-1)
+        attention_mask = data.batch['attention_mask']
+        response_mask = attention_mask[:, -response_length:]
+        advantages, returns = core_algos.compute_rloo_outcome_advantage(token_level_rewards=token_level_rewards,
                                                                         eos_mask=response_mask,
                                                                         index=index)
         data.batch['advantages'] = advantages
@@ -495,7 +520,11 @@ class RayPPOTrainer(object):
             critic_cls = RayClassWithInitArgs(cls=self.role_worker_mapping[Role.Critic], config=self.config.critic)
             self.resource_pool_to_cls[resource_pool]['critic'] = critic_cls
             self.use_critic = True
+        elif self.config.algorithm.adv_estimator == 'remax':
+            self.use_critic = False
         elif self.config.algorithm.adv_estimator == 'grpo':
+            self.use_critic = False
+        elif self.config.algorithm.adv_estimator == 'rloo':
             self.use_critic = False
         elif self.config.algorithm.adv_estimator == 'reinforce_plus_plus':
             self.use_critic = False
@@ -613,22 +642,56 @@ class RayPPOTrainer(object):
                 metrics = {}
                 timing_raw = {}
 
-                batch: DataProto = DataProto.from_single_dict(batch_dict)
-
+                batch: DataProto = DataProto.from_single_dict(batch_dict)      
                 # pop those keys for generation
                 gen_batch = batch.pop(batch_keys=['input_ids', 'attention_mask', 'position_ids'])
-
+                if self.config.algorithm.adv_estimator == 'remax':
+                    greedy_batch: DataProto = DataProto.from_single_dict(batch_dict) 
+                    greedy_gen_batch = greedy_batch.pop(batch_keys=['input_ids', 'attention_mask', 'position_ids'])
+                # if self.config.algorithm.adv_estimator == 'remax':
+                    # greedy_gen_batch = DataProto.from_single_dict(batch_dict).pop(batch_keys=['input_ids', 'attention_mask', 'position_ids'])
+                    greedy_gen_batch.meta_info = {
+                        'eos_token_id': self.tokenizer.eos_token_id,
+                        'pad_token_id': self.tokenizer.pad_token_id,
+                        'recompute_log_prob': False,
+                        'do_sample': False,
+                    }
                 with _timer('step', timing_raw):
                     # generate a batch
                     with _timer('gen', timing_raw):
                         gen_batch_output = self.actor_rollout_wg.generate_sequences(gen_batch)
-
+                        if self.config.algorithm.adv_estimator == 'remax':
+                            greedy_gen_batch_output = self.actor_rollout_wg.generate_sequences(greedy_gen_batch)
+                            greedy_batch.non_tensor_batch['uid'] = np.array([str(uuid.uuid4()) for _ in range(len(batch.batch))],
+                                                             dtype=object)
+                            greedy_batch = greedy_batch.union(greedy_gen_batch_output)
+                            # if self.use_rm:
+                            #     reward_tensor = self.rm_wg.compute_rm_score(greedy_gen_batch_output)
+                            #     greedy_gen_batch_output = greedy_gen_batch_output.union(reward_tensor)
+                            # reward_tensor = self.reward_fn(greedy_gen_batch_output)
+                            # batch.batch['greedy_token_level_scores'] = reward_tensor
+                    # union the generated batch with the original batch    
+                    if self.config.algorithm.adv_estimator == 'remax':
+                        if self.use_rm:
+                            reward_tensor = self.rm_wg.compute_rm_score(greedy_batch)
+                            greedy_batch = greedy_gen_batch_output.union(reward_tensor)
+                        reward_tensor = self.reward_fn(greedy_batch)
+                        greedy_batch.batch['token_level_scores'] = reward_tensor
+                        if not self.config.actor_rollout_ref.actor.use_kl_loss:
+                            greedy_batch, kl_metrics = apply_kl_penalty(greedy_batch,
+                                                                 kl_ctrl=self.kl_ctrl,
+                                                                 kl_penalty=self.config.algorithm.kl_penalty)
+                        else:
+                            greedy_batch.batch['token_level_rewards'] = greedy_batch.batch['token_level_scores']
+                        batch.batch['greedy_token_level_rewards'] = greedy_batch.batch['token_level_rewards']
+                    
                     batch.non_tensor_batch['uid'] = np.array([str(uuid.uuid4()) for _ in range(len(batch.batch))],
                                                              dtype=object)
                     # repeat to align with repeated responses in rollout
                     batch = batch.repeat(repeat_times=self.config.actor_rollout_ref.rollout.n, interleave=True)
                     batch = batch.union(gen_batch_output)
-
+                    # print(batch.batch["greedy_token_level_scores"])
+                    # assert False
                     # balance the number of valid tokens on each dp rank.
                     # Note that this breaks the order of data inside the batch.
                     # Please take care when you implement group based adv computation such as GRPO and rloo
@@ -648,7 +711,14 @@ class RayPPOTrainer(object):
                         with _timer('values', timing_raw):
                             values = self.critic_wg.compute_values(batch)
                             batch = batch.union(values)
-
+                            
+                    if self.config.algorithm.adv_estimator == 'remax':
+                            greedy_gen_batch_padded, pad_size = pad_dataproto_to_divisor(greedy_gen_batch, self.actor_rollout_wg.world_size)
+                            greedy_output_gen_batch_padded = self.actor_rollout_wg.generate_sequences(greedy_gen_batch_padded)
+                            # unpad
+                            greedy_output_gen_batch = unpad_dataproto(greedy_output_gen_batch_padded, pad_size=pad_size)
+                            greedy_batch = greedy_batch.union(greedy_output_gen_batch)
+                        
                     with _timer('adv', timing_raw):
                         # compute scores. Support both model and function-based.
                         # We first compute the scores using reward model. Then, we call reward_fn to combine
@@ -657,11 +727,10 @@ class RayPPOTrainer(object):
                             # we first compute reward model score
                             reward_tensor = self.rm_wg.compute_rm_score(batch)
                             batch = batch.union(reward_tensor)
-
                         # we combine with rule-based rm
                         reward_tensor = self.reward_fn(batch)
                         batch.batch['token_level_scores'] = reward_tensor
-
+                        
                         # compute rewards. apply_kl_penalty if available
                         if not self.config.actor_rollout_ref.actor.use_kl_loss:
                             batch, kl_metrics = apply_kl_penalty(batch,

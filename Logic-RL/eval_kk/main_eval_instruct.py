@@ -11,6 +11,8 @@ from kk_processor import KKProcessor
 import datasets
 from concurrent.futures import ThreadPoolExecutor
 
+os.environ["HF_DATASETS_CACHE"] = "../dataset"
+
 def load_jsonl(file_path):
     """Load data from a JSONL file."""
     if not os.path.exists(file_path):
